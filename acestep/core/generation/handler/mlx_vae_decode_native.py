@@ -8,6 +8,12 @@ import torch
 from loguru import logger
 from tqdm import tqdm
 
+# MLX keeps freed buffers in a reuse cache that may grow up to its GC limit
+# (about 95% of the recommended working set). VAE decode frees many large
+# intermediates of varying sizes, so without a cap the cache alone can fill most
+# of unified memory and push the system into swap. Cap it during decode only.
+_MLX_VAE_DECODE_CACHE_LIMIT_BYTES = 2 * 1024**3
+
 
 class MlxVaeDecodeNativeMixin:
     """Decode MLX latents with optional overlap-discard tiling."""
@@ -31,6 +37,9 @@ class MlxVaeDecodeNativeMixin:
     def _mlx_vae_decode(self, latents_torch):
         """Decode batched PyTorch latents using native MLX VAE decode.
 
+        The MLX buffer-cache limit is lowered for the duration of the decode and
+        restored afterwards, even if decoding raises.
+
         Args:
             latents_torch: Latent tensor shaped ``[batch, channels, frames]``.
 
@@ -51,13 +60,17 @@ class MlxVaeDecodeNativeMixin:
 
         decode_fn = self._resolve_mlx_decode_fn()
         audio_parts = []
-        for idx in range(batch_size):
-            decoded = self._mlx_decode_single(latents_mx[idx : idx + 1], decode_fn=decode_fn)
-            if decoded.dtype != mx.float32:
-                decoded = decoded.astype(mx.float32)
-            mx.eval(decoded)
-            audio_parts.append(np.array(decoded))
-            mx.clear_cache()
+        prev_cache_limit = mx.set_cache_limit(_MLX_VAE_DECODE_CACHE_LIMIT_BYTES)
+        try:
+            for idx in range(batch_size):
+                decoded = self._mlx_decode_single(latents_mx[idx : idx + 1], decode_fn=decode_fn)
+                if decoded.dtype != mx.float32:
+                    decoded = decoded.astype(mx.float32)
+                mx.eval(decoded)
+                audio_parts.append(np.array(decoded))
+                mx.clear_cache()
+        finally:
+            mx.set_cache_limit(prev_cache_limit)
 
         t_decode = _time.time()
         audio_nlc = np.concatenate(audio_parts, axis=0)
