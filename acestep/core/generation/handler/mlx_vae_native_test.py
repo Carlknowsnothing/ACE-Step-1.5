@@ -198,6 +198,28 @@ class MlxVaeNativeMixinTests(unittest.TestCase):
         self.assertEqual(fake_mx_core.cache_limit_calls, [123, _DEFAULT_FAKE_CACHE_LIMIT])
         self.assertEqual(fake_mx_core.cache_limit, _DEFAULT_FAKE_CACHE_LIMIT)
 
+    def test_mlx_cache_limit_context_keeps_lower_previous_limit(self):
+        """It does not raise a cache limit the caller already set below the cap."""
+        fake_mx_core = _fake_mx_core_module()
+        fake_mx_core.cache_limit = 512 * 1024**2
+        cap = MLX_VAE_DECODE_NATIVE_MODULE._MLX_VAE_DECODE_CACHE_LIMIT_BYTES
+        with MLX_VAE_DECODE_NATIVE_MODULE._mlx_cache_limit(fake_mx_core, cap):
+            limit_inside = fake_mx_core.cache_limit
+        self.assertEqual(limit_inside, 512 * 1024**2)
+        self.assertEqual(fake_mx_core.cache_limit, 512 * 1024**2)
+
+    def test_mlx_cache_limit_context_holds_lock_until_exit(self):
+        """It serializes cache-limit scopes and releases the lock even on errors."""
+        fake_mx_core = _fake_mx_core_module()
+        lock = MLX_VAE_DECODE_NATIVE_MODULE._MLX_CACHE_LIMIT_LOCK
+        locked_inside = []
+        with self.assertRaises(ValueError):
+            with MLX_VAE_DECODE_NATIVE_MODULE._mlx_cache_limit(fake_mx_core, 123):
+                locked_inside.append(lock.locked())
+                raise ValueError("boom")
+        self.assertEqual(locked_inside, [True])
+        self.assertFalse(lock.locked())
+
     def test_mlx_encode_single_without_tiling_updates_progress(self):
         """It encodes short audio in one pass and updates progress once."""
         host = _Host()

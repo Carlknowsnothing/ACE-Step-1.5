@@ -1,6 +1,7 @@
 """Native MLX VAE decode helpers for latent-to-audio conversion."""
 
 import math
+import threading
 import time as _time
 from contextlib import contextmanager
 
@@ -16,22 +17,33 @@ from tqdm import tqdm
 _MLX_VAE_DECODE_CACHE_LIMIT_BYTES = 4 * 1024**3
 
 
+# The cache limit is process-wide allocator state; serialize scopes so overlapping
+# decodes (multiple API/queue workers) cannot restore limits out of order.
+_MLX_CACHE_LIMIT_LOCK = threading.Lock()
+
+
 @contextmanager
 def _mlx_cache_limit(mx, limit_bytes):
-    """Temporarily set the MLX buffer-cache limit.
+    """Temporarily cap the MLX buffer-cache limit at ``limit_bytes``.
+
+    A lower limit already set by the caller is kept. Scopes are serialized with a
+    process-wide lock.
 
     Args:
         mx: The ``mlx.core`` module.
-        limit_bytes: Cache limit to apply inside the ``with`` block.
+        limit_bytes: Maximum cache limit to apply inside the ``with`` block.
 
     Yields:
         None. The previous limit is restored on exit, including on exceptions.
     """
-    prev_limit = mx.set_cache_limit(limit_bytes)
-    try:
-        yield
-    finally:
-        mx.set_cache_limit(prev_limit)
+    with _MLX_CACHE_LIMIT_LOCK:
+        prev_limit = mx.set_cache_limit(limit_bytes)
+        try:
+            if prev_limit < limit_bytes:
+                mx.set_cache_limit(prev_limit)
+            yield
+        finally:
+            mx.set_cache_limit(prev_limit)
 
 
 class MlxVaeDecodeNativeMixin:
