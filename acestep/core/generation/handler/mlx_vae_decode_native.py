@@ -2,6 +2,7 @@
 
 import math
 import time as _time
+from contextlib import contextmanager
 
 import numpy as np
 import torch
@@ -12,7 +13,25 @@ from tqdm import tqdm
 # (about 95% of the recommended working set). VAE decode frees many large
 # intermediates of varying sizes, so without a cap the cache alone can fill most
 # of unified memory and push the system into swap. Cap it during decode only.
-_MLX_VAE_DECODE_CACHE_LIMIT_BYTES = 2 * 1024**3
+_MLX_VAE_DECODE_CACHE_LIMIT_BYTES = 4 * 1024**3
+
+
+@contextmanager
+def _mlx_cache_limit(mx, limit_bytes):
+    """Temporarily set the MLX buffer-cache limit.
+
+    Args:
+        mx: The ``mlx.core`` module.
+        limit_bytes: Cache limit to apply inside the ``with`` block.
+
+    Yields:
+        None. The previous limit is restored on exit, including on exceptions.
+    """
+    prev_limit = mx.set_cache_limit(limit_bytes)
+    try:
+        yield
+    finally:
+        mx.set_cache_limit(prev_limit)
 
 
 class MlxVaeDecodeNativeMixin:
@@ -60,8 +79,7 @@ class MlxVaeDecodeNativeMixin:
 
         decode_fn = self._resolve_mlx_decode_fn()
         audio_parts = []
-        prev_cache_limit = mx.set_cache_limit(_MLX_VAE_DECODE_CACHE_LIMIT_BYTES)
-        try:
+        with _mlx_cache_limit(mx, _MLX_VAE_DECODE_CACHE_LIMIT_BYTES):
             for idx in range(batch_size):
                 decoded = self._mlx_decode_single(latents_mx[idx : idx + 1], decode_fn=decode_fn)
                 if decoded.dtype != mx.float32:
@@ -69,8 +87,6 @@ class MlxVaeDecodeNativeMixin:
                 mx.eval(decoded)
                 audio_parts.append(np.array(decoded))
                 mx.clear_cache()
-        finally:
-            mx.set_cache_limit(prev_cache_limit)
 
         t_decode = _time.time()
         audio_nlc = np.concatenate(audio_parts, axis=0)

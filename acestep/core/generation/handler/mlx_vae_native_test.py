@@ -186,6 +186,18 @@ class MlxVaeNativeMixinTests(unittest.TestCase):
         self.assertEqual(fake_mx_core.cache_limit_calls, [cap, _DEFAULT_FAKE_CACHE_LIMIT])
         self.assertEqual(fake_mx_core.cache_limit, _DEFAULT_FAKE_CACHE_LIMIT)
 
+    def test_mlx_cache_limit_context_restores_previous_limit_on_error(self):
+        """It applies the given limit inside the block and restores the old one on exit."""
+        fake_mx_core = _fake_mx_core_module()
+        limit_inside = []
+        with self.assertRaises(ValueError):
+            with MLX_VAE_DECODE_NATIVE_MODULE._mlx_cache_limit(fake_mx_core, 123):
+                limit_inside.append(fake_mx_core.cache_limit)
+                raise ValueError("boom")
+        self.assertEqual(limit_inside, [123])
+        self.assertEqual(fake_mx_core.cache_limit_calls, [123, _DEFAULT_FAKE_CACHE_LIMIT])
+        self.assertEqual(fake_mx_core.cache_limit, _DEFAULT_FAKE_CACHE_LIMIT)
+
     def test_mlx_encode_single_without_tiling_updates_progress(self):
         """It encodes short audio in one pass and updates progress once."""
         host = _Host()
